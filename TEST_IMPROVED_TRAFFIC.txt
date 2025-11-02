@@ -1,0 +1,144 @@
+TESTING IMPROVED TRAFFIC GENERATOR
+================================================================================
+
+The traffic generator has been fixed to generate CONTINUOUS, REALISTIC traffic.
+
+WHAT WAS WRONG BEFORE:
+- Traffic commands ran once and stopped immediately
+- No actual data transfer (empty nc connections)
+- HTTP requests completed in milliseconds
+- Result: Only ICMP packets captured, all other traffic failed
+
+WHAT'S FIXED NOW:
+- All traffic runs continuously in loops (while true)
+- FTP/SSH transfer actual files (100KB and 50KB)
+- HTTP requests repeat every 2-3 seconds
+- Both UDP and TCP iPerf traffic
+- Continuous ping (ICMP)
+
+TEST PROCEDURE:
+================================================================================
+
+TERMINAL 1 - Controller:
+------------------------
+conda activate ml-sdn
+cd /home/hello/Desktop/ML_SDN
+
+# Clean up old captured data first
+rm -f data/raw/captured_packets_*.json
+rm -f data/processed/features.csv
+
+# Start controller
+ryu-manager src/controller/sdn_controller.py --verbose
+
+
+TERMINAL 2 - Generate Traffic:
+------------------------------
+cd /home/hello/Desktop/ML_SDN
+
+# Clean up old Mininet sessions
+sudo mn -c
+
+# Generate mixed traffic for 90 seconds (longer to capture more)
+sudo -E env "PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH" python3 topology/custom_topo.py --topology custom --traffic mixed --duration 90
+
+
+TERMINAL 3 - Monitor and Analyze:
+----------------------------------
+conda activate ml-sdn
+cd /home/hello/Desktop/ML_SDN
+
+# Wait 30 seconds for first save, then check
+sleep 35
+ls -lh data/raw/
+
+# Check what protocols are captured (should see TCP, UDP, ICMP now!)
+python3 -c "
+import json
+files = !ls data/raw/captured_packets_*.json
+if files:
+    data = json.load(open(files[0]))
+    protocols = {}
+    for p in data:
+        proto = p.get('protocol', 'UNKNOWN')
+        protocols[proto] = protocols.get(proto, 0) + 1
+    print('Captured protocols:')
+    for proto, count in sorted(protocols.items()):
+        print(f'  {proto}: {count} packets')
+"
+
+# After traffic completes (90+ seconds), extract features
+python src/traffic_monitor/feature_extractor.py data/raw/captured_packets_*.json data/processed/features.csv
+
+# Classify traffic
+python src/ml_models/classifier.py data/models/ data/processed/features.csv
+
+
+EXPECTED RESULTS NOW:
+================================================================================
+
+Captured Protocols (in raw JSON):
+- TCP: 100-500+ packets (HTTP on ports 8000/8001, FTP on 21, SSH on 22, iPerf on 5002)
+- UDP: 50-200+ packets (iPerf UDP traffic)
+- ICMP: 20-100 packets (continuous ping)
+- OTHER: Some ARP/IPv6 packets (normal network control)
+
+Classified Flows:
+- HTTP flows (port 8000, 8001)
+- FTP flows (port 21)
+- SSH flows (port 22)
+- ICMP flows
+- Mixed confidence levels
+
+You should now see DIVERSE traffic types, not just ICMP!
+
+
+TRAFFIC BREAKDOWN:
+================================================================================
+
+What each traffic type generates:
+
+1. HTTP (port 8000, 8001):
+   - Servers on h1 and h2
+   - Clients on h3, h4, h5 making requests every 2-3 seconds
+   - Expect: Many TCP flows with HTTP characteristics
+
+2. FTP-like (port 21):
+   - Server on h1 transferring 100KB file
+   - Client on h3 downloading repeatedly
+   - Expect: Large TCP flows with data transfer
+
+3. SSH-like (port 22):
+   - Server on h2 transferring 50KB file
+   - Client on h4 downloading repeatedly
+   - Expect: Medium TCP flows
+
+4. ICMP (ping):
+   - h1->h2, h2->h3, h3->h4 continuous ping
+   - Expect: Regular ICMP echo request/reply pairs
+
+5. iPerf:
+   - UDP: h1 server, h2 client (continuous UDP stream)
+   - TCP: h3 server, h4 client (continuous TCP stream)
+   - Expect: High-bandwidth UDP and TCP flows
+
+
+TROUBLESHOOTING:
+================================================================================
+
+If you still only see ICMP:
+1. Check controller output - should show "Switch connected"
+2. Wait longer - traffic takes time to start (first 10-15 seconds)
+3. Check Mininet output - should show "Traffic generation started"
+4. Try running for 120 seconds instead of 90
+5. Check if services started: In Mininet CLI, run "h1 netstat -tuln"
+
+If packets aren't saved:
+1. Check controller logs for "Periodic save completed"
+2. Wait at least 30 seconds
+3. Check data/raw/ directory
+
+If feature extraction fails:
+1. Make sure all JSON files are valid
+2. Remove any corrupted files: rm data/raw/*.csv (CSV files shouldn't be there)
+3. Try processing one file at a time first

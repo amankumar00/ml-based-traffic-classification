@@ -1,0 +1,26 @@
+# Minimal requirements for ML-SDN project (Python 3.13 compatible)
+
+# SDN Controller - Install from git (Python 3.13 compatible)
+git+https://github.com/faucetsdn/ryu.git
+
+# Machine Learning (core packages only)
+scikit-learn
+numpy
+pandas
+
+# Data Processing
+scapy
+
+# Visualization
+matplotlib
+seaborn
+
+# Utilities
+pyyaml
+
+# Logging
+loguru
+
+# Testing (optional)
+# pytest
+# pytest-cov

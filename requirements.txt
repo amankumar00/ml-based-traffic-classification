@@ -1,0 +1,32 @@
+# SDN Controller (Python 3.8 compatible)
+ryu==4.34
+
+# Network Simulation
+# Note: Mininet is system package, install via apt-get
+# mininet==2.3.0
+
+# Machine Learning (Python 3.8 compatible versions)
+scikit-learn==1.3.2
+numpy==1.21.6
+pandas==1.3.5
+# TensorFlow - optional, only if you want to use neural networks
+tensorflow==2.11.0
+keras==2.11.0
+
+# Data Processing
+scapy==2.5.0
+
+# Visualization
+matplotlib==3.5.3
+seaborn==0.11.2
+
+# Utilities
+pyyaml==6.0
+python-dotenv==0.21.0
+
+# Testing
+pytest==7.2.0
+pytest-cov==4.0.0
+
+# Logging
+loguru==0.6.0
