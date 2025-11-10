@@ -74,39 +74,20 @@ echo "Controller is running, starting Mininet..."
 echo ""
 
 sudo -E env "PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH" python3 << 'ENDPYTHON'
-from mininet.net import Mininet
-from mininet.node import RemoteController, OVSSwitch
+import sys
+sys.path.insert(0, '/home/hello/Desktop/ML_SDN')
+
+from topology.ml_classifier_mesh_topo import create_ml_classifier_topology
 from mininet.log import setLogLevel, info
 import time
 
 setLogLevel('info')
 
-info('*** Creating network with 6 hosts\n')
-net = Mininet(
-    controller=lambda name: RemoteController(name, ip='127.0.0.1', port=6653),
-    switch=OVSSwitch
-)
+# Create mesh topology (matches FPLF topology)
+net, hosts = create_ml_classifier_topology()
 
-c0 = net.addController('c0')
-s1 = net.addSwitch('s1', protocols='OpenFlow13')
-
-h1 = net.addHost('h1', ip='10.0.0.1/24')
-h2 = net.addHost('h2', ip='10.0.0.2/24')
-h3 = net.addHost('h3', ip='10.0.0.3/24')
-h4 = net.addHost('h4', ip='10.0.0.4/24')
-h5 = net.addHost('h5', ip='10.0.0.5/24')
-h6 = net.addHost('h6', ip='10.0.0.6/24')
-
-net.addLink(h1, s1)
-net.addLink(h2, s1)
-net.addLink(h3, s1)
-net.addLink(h4, s1)
-net.addLink(h5, s1)
-net.addLink(h6, s1)
-
-info('*** Starting network\n')
-net.start()
-time.sleep(3)
+# Unpack hosts for compatibility with existing traffic generation code
+h1, h2, h3, h4, h5, h6, h7, h8, h9 = hosts
 
 info('*** Starting servers\n')
 
@@ -413,6 +394,7 @@ echo "========================================="
 
 NUM_FLOWS=$(grep '^[0-9]*,h[0-9]' data/processed/flow_classification.csv | wc -l)
 echo "✓ Host-to-host CSV generated: $NUM_FLOWS flows"
+echo "  (Port-based classification applied automatically during ML classification)"
 
 # Step 10: Show summary
 echo ""

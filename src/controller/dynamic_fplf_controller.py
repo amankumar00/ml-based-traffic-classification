@@ -1,0 +1,863 @@
+"""
+Dynamic FPLF (Flow Path Load Feedback) Controller
+Implements adaptive routing based on real-time link utilization monitoring
+Adapted from POX FPLF implementation for Ryu controller
+
+Features:
+- Real-time port statistics monitoring
+- Dynamic link weight updates based on utilization
+- Dijkstra-based path computation with adaptive weights
+- CSV export of link utilization and routing decisions
+"""
+
+from ryu.base import app_manager
+from ryu.controller import ofp_event
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.controller.handler import set_ev_cls
+from ryu.ofproto import ofproto_v1_3
+from ryu.lib.packet import packet, ethernet, ipv4, tcp, udp, arp, icmp
+from ryu.topology import event
+from ryu.topology.api import get_switch, get_link
+from ryu.lib import hub
+import networkx as nx
+import time
+import csv
+import os
+from datetime import datetime
+from collections import defaultdict
+
+
+class DynamicFPLFController(app_manager.RyuApp):
+    """
+    Dynamic FPLF Controller with Traffic-Type Awareness and Real-Time Link Monitoring
+
+    Combined Weight Formula:
+    1. Base Weight (from utilization):
+       - uti == 0:           weight = 500 (initial/idle)
+       - 0 < uti < 0.08:     weight = 499 - (0.08 - uti) (below threshold)
+       - uti >= 0.08:        weight = 1000 (congested, threshold adjusted for 10Mbps bottleneck)
+
+    2. Priority Adjustment (from ML classification):
+       - adjusted_weight = base_weight * priority_factor
+       - VIDEO (priority=4): factor=0.25 → strongly prefers low-load links (4x better)
+       - SSH (priority=3):   factor=0.5  → moderately prefers low-load links (2x better)
+       - HTTP (priority=2):  factor=0.75 → slight preference (1.33x better)
+       - FTP (priority=1):   factor=1.0  → full weight, neutral
+       - UNKNOWN (priority=0): factor=1.0 → no adjustment
+
+    This combines dynamic load balancing with traffic-type priorities
+    """
+
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+
+    def __init__(self, *args, **kwargs):
+        super(DynamicFPLFController, self).__init__(*args, **kwargs)
+
+        # MAC learning
+        self.mac_to_port = {}  # {dpid: {mac: port}}
+        self.mac_to_dpid = {}  # {mac: dpid}
+
+        # Topology
+        self.topology = nx.Graph()
+        self.datapaths = {}  # {dpid: datapath}
+        self.adjacency = defaultdict(lambda: defaultdict(lambda: None))  # {dpid1: {dpid2: port}}
+
+        # Port statistics tracking
+        self.port_stats = defaultdict(lambda: defaultdict(int))  # {dpid: {port: last_bytes}}
+        self.link_ports = defaultdict(list)  # {(dpid, port): [dpid1, dpid2]}
+        self.link_utilization = {}  # {(dpid1, dpid2): utilization_percentage}
+
+        # Inter-switch ports (don't learn host MACs from these)
+        self.inter_switch_ports = set()  # (dpid, port_no)
+
+        # Traffic priorities (higher = more important)
+        self.traffic_priorities = {
+            'VIDEO': 4,  # Highest - real-time streaming
+            'SSH': 3,    # High - interactive
+            'HTTP': 2,   # Medium - web browsing
+            'FTP': 1,    # Low - bulk transfer
+            'UNKNOWN': 0 # Default
+        }
+
+        # Load classified flows from ML
+        self.classified_flows = self._load_classified_flows()
+
+        # Statistics
+        self.packet_count = 0
+        self.stats_update_count = 0
+
+        # Output directories
+        self.data_dir = os.path.join(os.path.dirname(__file__), '../../data/fplf_monitoring')
+        os.makedirs(self.data_dir, exist_ok=True)
+
+        # CSV files for monitoring
+        self.utilization_csv = os.path.join(self.data_dir, 'link_utilization.csv')
+        self.routes_csv = os.path.join(self.data_dir, 'fplf_routes.csv')
+        self.graph_csv = os.path.join(self.data_dir, 'graph_weights.csv')
+
+        # Initialize CSV files with headers
+        self._init_csv_files()
+
+        # Load host-to-switch mapping
+        self.host_map = self._load_host_map()
+
+        # Pre-populate MAC learning from host_map (critical for static ARP environments)
+        self._populate_from_host_map()
+
+        # Start monitoring thread
+        self.monitor_thread = hub.spawn(self._monitor)
+
+        self.logger.info("="*60)
+        self.logger.info("Dynamic FPLF Controller with Traffic-Type Awareness")
+        self.logger.info("="*60)
+        self.logger.info(f"Monitoring data: {self.data_dir}")
+        self.logger.info(f"Loaded {len(self.host_map)} host mappings")
+        self.logger.info(f"Loaded {len(self.classified_flows)} classified flows")
+        self.logger.info(f"Traffic priorities: VIDEO=4, SSH=3, HTTP=2, FTP=1")
+
+    def _init_csv_files(self):
+        """Initialize CSV files with headers"""
+        # Link utilization CSV
+        with open(self.utilization_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'link', 'utilization_percent', 'weight'])
+
+        # Routes CSV
+        with open(self.routes_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'src_dpid', 'dst_dpid', 'baseline_path', 'fplf_path',
+                           'traffic_type', 'priority', 'base_weights', 'adjusted_weights',
+                           'route_changed'])
+
+        # Graph weights CSV
+        with open(self.graph_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'edge', 'weight', 'utilization'])
+
+    def _load_host_map(self):
+        """
+        Load host-to-switch mapping from config file
+        Format: MAC DPID PORT
+        Example: 00:00:00:00:00:01 1 1
+        """
+        config_path = os.path.join(os.path.dirname(__file__), '../../config/host_map.txt')
+        host_map = {}
+
+        # Create default mapping if file doesn't exist
+        if not os.path.exists(config_path):
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            # Create default mapping for custom_topo (3 switches, 3 hosts each)
+            default_map = [
+                "00:00:00:00:00:01 1 1",
+                "00:00:00:00:00:02 1 2",
+                "00:00:00:00:00:03 1 3",
+                "00:00:00:00:00:04 2 1",
+                "00:00:00:00:00:05 2 2",
+                "00:00:00:00:00:06 2 3",
+                "00:00:00:00:00:07 3 1",
+                "00:00:00:00:00:08 3 2",
+                "00:00:00:00:00:09 3 3",
+            ]
+            with open(config_path, 'w') as f:
+                f.write('\n'.join(default_map))
+            self.logger.info(f"Created default host map: {config_path}")
+
+        # Load mapping
+        try:
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            mac, dpid, port = parts[0], int(parts[1]), int(parts[2])
+                            host_map[mac] = (dpid, port)
+            self.logger.info(f"Loaded host map from {config_path}")
+        except Exception as e:
+            self.logger.error(f"Error loading host map: {e}")
+
+        return host_map
+
+    def _populate_from_host_map(self):
+        """
+        Pre-populate MAC learning tables from host_map
+        Critical for environments with autoStaticArp where hosts don't send ARP packets
+        """
+        if not self.host_map:
+            self.logger.warning("No host_map available for pre-population")
+            return
+
+        for mac, (dpid, port) in self.host_map.items():
+            # Set global MAC-to-DPID mapping (which switch has this MAC)
+            self.mac_to_dpid[mac] = dpid
+
+            # Set per-switch MAC-to-port mapping (which port on that switch)
+            self.mac_to_port.setdefault(dpid, {})
+            self.mac_to_port[dpid][mac] = port
+
+        self.logger.info(f"Pre-populated MAC tables with {len(self.host_map)} entries from host_map")
+        self.logger.info(f"MAC-to-DPID: {dict(self.mac_to_dpid)}")
+
+    def _load_classified_flows(self):
+        """
+        Load classified flows from ML classification CSV
+        Returns: dict mapping (src_host, dst_host) -> traffic_type
+        """
+        import pandas as pd
+
+        csv_path = os.path.join(
+            os.path.dirname(__file__),
+            '../../data/processed/host_to_host_flows.csv'
+        )
+
+        flows = {}
+        if os.path.exists(csv_path):
+            try:
+                df = pd.read_csv(csv_path)
+                for _, row in df.iterrows():
+                    key = (row['src_host'], row['dst_host'])
+                    flows[key] = {
+                        'traffic_type': row['traffic_type'],
+                        'priority': self.traffic_priorities.get(row['traffic_type'], 0),
+                        'confidence': float(row['confidence']),
+                        'dst_port': int(row['dst_port']),
+                        'protocol': row['protocol']
+                    }
+                self.logger.info(f"Loaded {len(flows)} classified flows from {csv_path}")
+            except Exception as e:
+                self.logger.warning(f"Error loading classified flows: {e}")
+        else:
+            self.logger.warning(f"Flow classification file not found: {csv_path}")
+
+        return flows
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        """Handle switch connection"""
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        # Install table-miss flow entry
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+        self.add_flow(datapath, 0, match, actions)
+
+        self.datapaths[datapath.id] = datapath
+        self.port_stats[int(datapath.id)] = {}
+
+        self.logger.info(f"Switch s{datapath.id} connected")
+
+    def add_flow(self, datapath, priority, match, actions, buffer_id=None, idle_timeout=10):
+        """Add flow entry to switch"""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+
+        if buffer_id:
+            mod = parser.OFPFlowMod(
+                datapath=datapath, buffer_id=buffer_id,
+                priority=priority, match=match, instructions=inst,
+                idle_timeout=idle_timeout
+            )
+        else:
+            mod = parser.OFPFlowMod(
+                datapath=datapath, priority=priority,
+                match=match, instructions=inst,
+                idle_timeout=idle_timeout
+            )
+        datapath.send_msg(mod)
+
+    @set_ev_cls(event.EventSwitchEnter)
+    def switch_enter_handler(self, ev):
+        """Handle switch entering topology"""
+        self.logger.info(f"Switch entered topology: {ev.switch.dp.id}")
+        self._update_topology()
+
+    @set_ev_cls(event.EventLinkAdd)
+    def link_add_handler(self, ev):
+        """Handle link addition"""
+        src = ev.link.src
+        dst = ev.link.dst
+
+        # Track adjacency
+        self.adjacency[src.dpid][dst.dpid] = src.port_no
+
+        # Track link ports
+        self.link_ports[(src.dpid, src.port_no)] = [src.dpid, dst.dpid]
+        self.link_ports[(dst.dpid, dst.port_no)] = [dst.dpid, src.dpid]
+
+        # Initialize link utilization
+        self.link_utilization[(src.dpid, dst.dpid)] = 0
+        self.link_utilization[(dst.dpid, src.dpid)] = 0
+
+        # Mark as inter-switch port
+        self.inter_switch_ports.add((src.dpid, src.port_no))
+        self.inter_switch_ports.add((dst.dpid, dst.port_no))
+
+        self.logger.info(f"Link discovered: s{src.dpid}:{src.port_no} <--> s{dst.dpid}:{dst.port_no}")
+        self._update_topology()
+
+    def _update_topology(self):
+        """Update network topology graph"""
+        switches = get_switch(self, None)
+        links = get_link(self, None)
+
+        # Clear and rebuild
+        self.topology.clear()
+
+        # Add switches
+        for switch in switches:
+            self.topology.add_node(switch.dp.id)
+
+        # Add links with initial weight
+        for link in links:
+            src_dpid = link.src.dpid
+            dst_dpid = link.dst.dpid
+
+            # Add edge with initial weight of 500
+            self.topology.add_edge(src_dpid, dst_dpid,
+                                   port=link.src.port_no,
+                                   weight=500)
+
+        # Fallback: Manual topology for custom_topo (3 switches)
+        num_switches = self.topology.number_of_nodes()
+        num_links = self.topology.number_of_edges()
+
+        if num_links == 0 and num_switches >= 2:
+            self.logger.warning(f"LLDP discovery failed - building manual topology for {num_switches} switches")
+
+            # Clear old data
+            self.inter_switch_ports.clear()
+            self.mac_to_dpid.clear()
+            self.mac_to_port.clear()
+            self._clear_all_flows()
+
+            if num_switches == 3:
+                # Mesh (triangle): s1 -- s2 -- s3 with s1 -- s3 direct link
+                # This matches both linear AND mesh topologies
+                manual_links = [
+                    (1, 2, 4), (2, 1, 4),  # s1:4 <-> s2:4
+                    (2, 3, 5), (3, 2, 4),  # s2:5 <-> s3:4
+                    (1, 3, 5), (3, 1, 5),  # s1:5 <-> s3:5 (mesh direct link)
+                ]
+            elif num_switches == 2:
+                # s1 -- s2
+                manual_links = [
+                    (1, 2, 4), (2, 1, 4),
+                ]
+            else:
+                # Linear topology
+                manual_links = []
+                for i in range(1, num_switches):
+                    manual_links.append((i, i+1, i+1))
+                    manual_links.append((i+1, i, i))
+
+            for src, dst, port in manual_links:
+                self.adjacency[src][dst] = port
+                self.link_ports[(src, port)] = [src, dst]
+                self.link_utilization[(src, dst)] = 0
+                self.topology.add_edge(src, dst, port=port, weight=500)
+                self.inter_switch_ports.add((src, port))
+
+            self.logger.info(f"Manual topology: {num_switches} switches, {self.topology.number_of_edges()} links")
+            self.logger.info(f"Inter-switch ports: {sorted(self.inter_switch_ports)}")
+
+            # Re-populate MAC tables after clearing (critical!)
+            self._populate_from_host_map()
+
+        self.logger.info(f"Topology: {self.topology.number_of_nodes()} switches, "
+                        f"{self.topology.number_of_edges()} links")
+
+    def _clear_all_flows(self):
+        """Clear all flow entries from all switches"""
+        for dpid, datapath in self.datapaths.items():
+            ofproto = datapath.ofproto
+            parser = datapath.ofproto_parser
+
+            # Delete all flows
+            match = parser.OFPMatch()
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY,
+                out_group=ofproto.OFPG_ANY,
+                match=match
+            )
+            datapath.send_msg(mod)
+
+            # Re-install table-miss
+            match = parser.OFPMatch()
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                              ofproto.OFPCML_NO_BUFFER)]
+            self.add_flow(datapath, 0, match, actions)
+
+            # Install ARP flooding
+            match = parser.OFPMatch(eth_type=0x0806)
+            actions = [
+                parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER),
+                parser.OFPActionOutput(ofproto.OFPP_FLOOD)
+            ]
+            self.add_flow(datapath, 100, match, actions)
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def state_change_handler(self, ev):
+        """Track datapath state changes"""
+        datapath = ev.datapath
+        if ev.state == MAIN_DISPATCHER:
+            if datapath.id not in self.datapaths:
+                self.logger.info(f'Register datapath: s{datapath.id}')
+                self.datapaths[datapath.id] = datapath
+        elif ev.state == DEAD_DISPATCHER:
+            if datapath.id in self.datapaths:
+                self.logger.info(f'Unregister datapath: s{datapath.id}')
+                del self.datapaths[datapath.id]
+
+    def _monitor(self):
+        """Periodic monitoring thread - request port stats every 1 second"""
+        while True:
+            try:
+                for datapath in self.datapaths.values():
+                    self._request_stats(datapath)
+            except Exception as e:
+                self.logger.error(f"Error in monitor: {e}")
+            hub.sleep(1)
+
+    def _request_stats(self, datapath):
+        """Request port statistics from switch"""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
+        datapath.send_msg(req)
+
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def port_stats_reply_handler(self, ev):
+        """
+        Handle port statistics reply
+        Calculate link utilization and update graph weights dynamically
+        """
+        body = ev.msg.body
+        dpid = ev.msg.datapath.id
+
+        self.stats_update_count += 1
+
+        for stat in body:
+            port_no = stat.port_no
+
+            # Skip special ports
+            if port_no >= 65534:
+                continue
+
+            # Current bytes (tx + rx)
+            current_bytes = stat.tx_bytes + stat.rx_bytes
+
+            # Get last bytes
+            last_bytes = self.port_stats[int(dpid)].get(int(port_no), 0)
+
+            # Calculate utilization
+            bytes_diff = current_bytes - last_bytes
+
+            # Convert to Mbps (bytes/sec * 8 / 1024 / 1024)
+            # Assuming 1 second interval
+            utilization_mbps = (bytes_diff * 8) / (1024 * 1024)
+
+            # Link capacity (assume 100 Mbps for switch-switch, 10 Mbps for host-switch)
+            link_capacity = 100  # Mbps (conservative)
+
+            # Utilization percentage (0.0 to 1.0)
+            utilization = utilization_mbps / link_capacity
+            utilization = max(0.0, min(utilization, 1.0))  # Clamp to [0, 1]
+
+            # Update port stats
+            self.port_stats[int(dpid)][int(port_no)] = current_bytes
+
+            # Update link utilization if this is an inter-switch link
+            if self.link_ports[(dpid, port_no)]:
+                link = tuple(self.link_ports[(dpid, port_no)])
+                if len(link) == 2:
+                    self.link_utilization[link] = utilization
+
+                    # Log significant utilization
+                    if utilization > 0.1 and self.stats_update_count % 10 == 0:
+                        self.logger.info(f"Link {link}: {utilization*100:.1f}% utilized ({utilization_mbps:.2f} Mbps)")
+
+        # Update graph weights based on utilization
+        self._update_graph_weights()
+
+        # Export to CSV periodically
+        if self.stats_update_count % 10 == 0:
+            self._export_utilization_to_csv()
+            self._export_graph_weights_to_csv()
+
+    def _update_graph_weights(self):
+        """
+        Update graph edge weights based on link utilization
+
+        Weight Formula (ADJUSTED for heterogeneous link bandwidths):
+        - uti == 0:           weight = 500 (initial/idle)
+        - 0 < uti < 0.08:     weight = 499 - (0.08 - uti) (below threshold)
+        - uti >= 0.08:        weight = 1000 (congested)
+
+        NOTE: Threshold lowered to 8% because controller assumes 100 Mbps for all links,
+        but actual bottleneck is 10 Mbps. So 8% measured ≈ 80% actual utilization on 10Mbps link.
+        We see ~10% utilization on s1-s3, which means link is saturated.
+        """
+        for (src, dst) in self.topology.edges():
+            if (src, dst) in self.link_utilization:
+                uti = self.link_utilization[(src, dst)]
+
+                if uti == 0:
+                    weight = 500  # Idle link
+                elif 0 < uti < 0.08:  # Lowered from 0.9 to account for 10 Mbps bottleneck
+                    weight = 499 - (0.08 - uti)  # Gradually increase weight as utilization approaches 0.08
+                else:
+                    weight = 1000  # Congested link - avoid
+
+                self.topology[src][dst]['weight'] = weight
+
+    def _export_utilization_to_csv(self):
+        """Export current link utilization to CSV"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        try:
+            with open(self.utilization_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                for link, uti in self.link_utilization.items():
+                    if (link[0], link[1]) in self.topology.edges():
+                        weight = self.topology[link[0]][link[1]].get('weight', 500)
+                        writer.writerow([timestamp, f"s{link[0]}-s{link[1]}",
+                                       f"{uti*100:.2f}", weight])
+        except Exception as e:
+            self.logger.error(f"Error exporting utilization: {e}")
+
+    def _export_graph_weights_to_csv(self):
+        """Export current graph edge weights to CSV"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        try:
+            with open(self.graph_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                for (src, dst) in self.topology.edges():
+                    weight = self.topology[src][dst].get('weight', 500)
+                    uti = self.link_utilization.get((src, dst), 0.0)
+                    writer.writerow([timestamp, f"({src},{dst})", weight, f"{uti:.4f}"])
+        except Exception as e:
+            self.logger.error(f"Error exporting graph weights: {e}")
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def packet_in_handler(self, ev):
+        """Handle packet-in messages"""
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+        dpid = datapath.id
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+
+        # Ignore LLDP
+        if eth.ethertype == 0x88cc:
+            return
+
+        dst = eth.dst
+        src = eth.src
+
+        # Learn MAC address (but not from inter-switch ports)
+        if (dpid, in_port) not in self.inter_switch_ports:
+            self.mac_to_dpid[src] = dpid
+            self.mac_to_port.setdefault(dpid, {})
+            self.mac_to_port[dpid][src] = in_port
+
+        # Handle ARP
+        arp_pkt = pkt.get_protocol(arp.arp)
+        if arp_pkt:
+            self._handle_arp(datapath, in_port, pkt, arp_pkt, src, dst)
+            return
+
+        # Handle IP packets
+        ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ip_pkt and dst in self.mac_to_dpid:
+            dst_dpid = self.mac_to_dpid[dst]
+
+            # Get traffic type and priority from ML classification
+            src_host = self._mac_to_host(src)
+            dst_host = self._mac_to_host(dst)
+            flow_key = (src_host, dst_host)
+
+            traffic_type = 'UNKNOWN'
+            priority = 0
+
+            if flow_key in self.classified_flows:
+                flow_info = self.classified_flows[flow_key]
+                traffic_type = flow_info['traffic_type']
+                priority = flow_info['priority']
+            else:
+                # Log first 10 misses for debugging
+                if self.packet_count < 10:
+                    self.logger.info(f"Flow lookup MISS: {flow_key} not in classified_flows")
+                    if self.packet_count == 0:
+                        self.logger.info(f"Available flows: {list(self.classified_flows.keys())[:5]}")
+
+            # Compute BOTH paths for comparison
+            baseline_path = self._compute_baseline_path(dpid, dst_dpid)
+            fplf_path = self._compute_fplf_path(dpid, dst_dpid, priority)
+
+            if fplf_path:
+                # Use FPLF path for actual routing
+                self._install_path(fplf_path, src, dst, in_port, msg)
+                # Log both paths for comparison
+                self._log_route(dpid, dst_dpid, baseline_path, fplf_path, ip_pkt, traffic_type, priority)
+                return
+            else:
+                # Log path computation failure
+                self.logger.warning(f"No path found: s{dpid} -> s{dst_dpid}, flooding packet")
+                self.logger.warning(f"Topology nodes: {list(self.topology.nodes())}")
+                self.logger.warning(f"Topology edges: {list(self.topology.edges())}")
+
+        # Flood if no path found
+        self._flood_packet(datapath, in_port, msg)
+
+    def _handle_arp(self, datapath, in_port, pkt, arp_pkt, src, dst):
+        """Handle ARP packets"""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        # Always flood ARP requests
+        if arp_pkt.opcode == 1:  # ARP request
+            actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+            out = parser.OFPPacketOut(
+                datapath=datapath,
+                buffer_id=ofproto.OFP_NO_BUFFER,
+                in_port=in_port,
+                actions=actions,
+                data=pkt.data
+            )
+            datapath.send_msg(out)
+        elif arp_pkt.opcode == 2:  # ARP reply
+            # Send directly if we know destination, otherwise flood
+            if dst in self.mac_to_port.get(datapath.id, {}):
+                out_port = self.mac_to_port[datapath.id][dst]
+                actions = [parser.OFPActionOutput(out_port)]
+            else:
+                actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+
+            out = parser.OFPPacketOut(
+                datapath=datapath,
+                buffer_id=ofproto.OFP_NO_BUFFER,
+                in_port=in_port,
+                actions=actions,
+                data=pkt.data
+            )
+            datapath.send_msg(out)
+
+    def _flood_packet(self, datapath, in_port, msg):
+        """Flood packet to all ports"""
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=msg.buffer_id,
+            in_port=in_port,
+            actions=actions,
+            data=data
+        )
+        datapath.send_msg(out)
+
+    def _mac_to_host(self, mac):
+        """Convert MAC address to host name (e.g., 00:00:00:00:00:01 -> h1)"""
+        try:
+            # Extract last byte of MAC and convert to host number
+            mac_parts = mac.split(':')
+            host_num = int(mac_parts[-1], 16)
+            return f'h{host_num}'
+        except:
+            return f'unknown_{mac}'
+
+    def _compute_baseline_path(self, src_dpid, dst_dpid):
+        """
+        Compute baseline path using simple shortest path (uniform weights, no FPLF)
+        This represents what a traditional routing algorithm would choose
+        """
+        if src_dpid == dst_dpid:
+            return [src_dpid]
+
+        try:
+            # Simple shortest path by hop count (all edges weight = 1)
+            path = nx.shortest_path(self.topology, src_dpid, dst_dpid)
+            return path
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+    def _compute_fplf_path(self, src_dpid, dst_dpid, priority=0):
+        """
+        Compute optimal path using Dijkstra's algorithm with dynamic weights AND traffic priority
+
+        Combined FPLF Formula:
+        - Base weight from utilization: 500 (idle), 499-(0.9-uti) (active), 1000 (congested)
+        - Priority factor: (5 - priority) / 4
+        - Final weight = base_weight * priority_factor
+
+        This means:
+        - VIDEO (priority=4): factor=0.25 → strongly prefers low-weight links
+        - SSH (priority=3): factor=0.5 → moderately prefers low-weight links
+        - HTTP (priority=2): factor=0.75 → slight preference for low-weight links
+        - FTP (priority=1): factor=1.0 → uses full weights, less picky
+        """
+        if src_dpid == dst_dpid:
+            return [src_dpid]
+
+        try:
+            # Apply priority-based weight adjustment
+            for (src, dst) in self.topology.edges():
+                base_weight = self.topology[src][dst].get('weight', 500)
+
+                # Priority factor: higher priority = lower multiplier = stronger preference for low-weight paths
+                # Special case: priority=0 (UNKNOWN) uses factor=1.0 (no adjustment)
+                if priority == 0:
+                    priority_factor = 1.0  # No adjustment for unknown traffic
+                else:
+                    priority_factor = (5 - priority) / 4.0
+
+                # Adjust weight based on priority
+                adjusted_weight = base_weight * priority_factor
+
+                # Store adjusted weight temporarily for Dijkstra
+                self.topology[src][dst]['adjusted_weight'] = adjusted_weight
+
+            # Use Dijkstra with adjusted weights
+            path = nx.dijkstra_path(self.topology, src_dpid, dst_dpid, weight='adjusted_weight')
+            return path
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return None
+
+    def _install_path(self, path, src_mac, dst_mac, in_port, msg):
+        """Install flow rules along the computed path"""
+        for i in range(len(path)):
+            dpid = path[i]
+            datapath = self.datapaths.get(dpid)
+
+            if not datapath:
+                continue
+
+            parser = datapath.ofproto_parser
+
+            # Determine output port
+            if i == len(path) - 1:
+                # Last switch - output to destination host
+                out_port = self.mac_to_port[dpid][dst_mac]
+            else:
+                # Intermediate switch - output to next switch
+                next_dpid = path[i + 1]
+                out_port = self.adjacency[dpid][next_dpid]
+
+            actions = [parser.OFPActionOutput(out_port)]
+            match = parser.OFPMatch(eth_dst=dst_mac, eth_src=src_mac)
+
+            # Install flow with 10 second timeout
+            self.add_flow(datapath, 10, match, actions, idle_timeout=10)
+
+            # Send packet out from first switch
+            if i == 0:
+                data = None
+                if msg.buffer_id == datapath.ofproto.OFP_NO_BUFFER:
+                    data = msg.data
+
+                out = parser.OFPPacketOut(
+                    datapath=datapath,
+                    buffer_id=msg.buffer_id,
+                    in_port=in_port,
+                    actions=actions,
+                    data=data
+                )
+                datapath.send_msg(out)
+
+        # Install reverse path
+        reverse_path = path[::-1]
+        for i in range(len(reverse_path)):
+            dpid = reverse_path[i]
+            datapath = self.datapaths.get(dpid)
+
+            if not datapath:
+                continue
+
+            parser = datapath.ofproto_parser
+
+            # Determine output port
+            if i == len(reverse_path) - 1:
+                # Last switch - output to source host
+                out_port = self.mac_to_port[dpid][src_mac]
+            else:
+                # Intermediate switch - output to next switch
+                next_dpid = reverse_path[i + 1]
+                out_port = self.adjacency[dpid][next_dpid]
+
+            actions = [parser.OFPActionOutput(out_port)]
+            match = parser.OFPMatch(eth_dst=src_mac, eth_src=dst_mac)
+
+            # Install reverse flow
+            self.add_flow(datapath, 10, match, actions, idle_timeout=10)
+
+    def _log_route(self, src_dpid, dst_dpid, baseline_path, fplf_path, ip_pkt, traffic_type='UNKNOWN', priority=0):
+        """Log routing decision with traffic type, priority, and path comparison"""
+        self.packet_count += 1
+
+        # Determine if route changed
+        route_changed = baseline_path != fplf_path if baseline_path else False
+
+        # Log to console (throttled)
+        if self.packet_count % 50 == 0:
+            baseline_str = ' -> '.join([f's{dpid}' for dpid in baseline_path]) if baseline_path else 'N/A'
+            fplf_str = ' -> '.join([f's{dpid}' for dpid in fplf_path])
+
+            path_weights = []
+            adjusted_weights = []
+            for i in range(len(fplf_path) - 1):
+                weight = self.topology[fplf_path[i]][fplf_path[i+1]].get('weight', 500)
+                adj_weight = self.topology[fplf_path[i]][fplf_path[i+1]].get('adjusted_weight', weight)
+                path_weights.append(f"{weight:.1f}")
+                adjusted_weights.append(f"{adj_weight:.1f}")
+
+            self.logger.info("="*70)
+            self.logger.info(f"FPLF Route Comparison #{self.packet_count}")
+            self.logger.info(f"  Flow: {ip_pkt.src} -> {ip_pkt.dst}")
+            self.logger.info(f"  Traffic: {traffic_type} (Priority={priority})")
+            self.logger.info(f"  Baseline Path (no FPLF): {baseline_str}")
+            self.logger.info(f"  FPLF Path (optimized):   {fplf_str}")
+            if route_changed:
+                self.logger.info(f"  ⚡ ROUTE CHANGED! FPLF chose different path")
+            else:
+                self.logger.info(f"  ✓ Same path (FPLF confirms optimal)")
+            self.logger.info(f"  Base Weights: [{', '.join(path_weights)}]")
+            self.logger.info(f"  Adjusted Weights: [{', '.join(adjusted_weights)}]")
+            self.logger.info("="*70)
+
+        # Export to CSV
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            baseline_str = ' -> '.join([f's{dpid}' for dpid in baseline_path]) if baseline_path else 'N/A'
+            fplf_str = ' -> '.join([f's{dpid}' for dpid in fplf_path])
+
+            path_weights = [self.topology[fplf_path[i]][fplf_path[i+1]].get('weight', 500)
+                          for i in range(len(fplf_path) - 1)]
+            adj_weights = [self.topology[fplf_path[i]][fplf_path[i+1]].get('adjusted_weight', 500)
+                          for i in range(len(fplf_path) - 1)]
+
+            with open(self.routes_csv, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([timestamp, src_dpid, dst_dpid, baseline_str, fplf_str,
+                               traffic_type, priority, str(path_weights), str(adj_weights),
+                               'YES' if route_changed else 'NO'])
+        except Exception as e:
+            self.logger.error(f"Error logging route: {e}")

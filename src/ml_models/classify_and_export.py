@@ -31,6 +31,35 @@ def ip_to_host(ip):
     return ip
 
 
+def classify_by_port(src_port, dst_port):
+    """
+    Classify traffic based on well-known port numbers
+    Checks BOTH source and destination ports (server can be either end)
+    Returns traffic type or None if port is not recognized
+    """
+    port_mapping = {
+        80: 'HTTP',
+        8080: 'HTTP',
+        443: 'HTTP',
+        21: 'FTP',
+        20: 'FTP',
+        22: 'SSH',
+        5004: 'VIDEO',
+        5006: 'VIDEO',
+        1935: 'VIDEO',  # RTMP
+    }
+
+    # Check destination port first (most common case)
+    if dst_port in port_mapping:
+        return port_mapping[dst_port]
+
+    # Check source port (for reply traffic from servers)
+    if src_port in port_mapping:
+        return port_mapping[src_port]
+
+    return None
+
+
 def parse_flow_key(flow_key_str):
     """
     Parse flow_key string like '(10.0.0.1, 5004, 10.0.0.3, 44000, UDP)'
@@ -152,6 +181,19 @@ def main():
         src_host = ip_to_host(flow_info['src_ip'])
         dst_host = ip_to_host(flow_info['dst_ip'])
 
+        # Use port-based classification as override if available
+        ml_prediction = predicted_classes[i]
+        port_based_class = classify_by_port(flow_info['src_port'], flow_info['dst_port'])
+
+        if port_based_class is not None:
+            # Port-based classification overrides ML prediction
+            final_class = port_based_class
+            classification_method = 'port'
+        else:
+            # Use ML prediction if port is not in known list
+            final_class = ml_prediction
+            classification_method = 'ml'
+
         # Build result row
         result = {
             'flow_id': i + 1,
@@ -162,7 +204,7 @@ def main():
             'src_port': flow_info['src_port'],
             'dst_port': flow_info['dst_port'],
             'protocol': flow_info['protocol'],
-            'traffic_type': predicted_classes[i],
+            'traffic_type': final_class,
             'confidence': f"{confidences[i]:.4f}",
             'total_packets': int(features_df.iloc[i].get('total_packets', 0)),
             'total_bytes': int(features_df.iloc[i].get('total_bytes', 0)),
@@ -175,10 +217,16 @@ def main():
     # Create results dataframe
     results_df = pd.DataFrame(results)
 
+    # Count classification methods
+    port_classified = sum(1 for r in results if classify_by_port(r['src_port'], r['dst_port']) is not None)
+    ml_classified = len(results) - port_classified
+
     # Save to CSV
     results_df.to_csv(output_file, index=False)
     print(f"\n✓ Results saved to {output_file}")
     print(f"  Total flows: {len(results_df)}")
+    print(f"  Port-based classification: {port_classified} flows")
+    print(f"  ML-based classification: {ml_classified} flows")
 
     # Show summary
     print("\nTraffic Summary:")
