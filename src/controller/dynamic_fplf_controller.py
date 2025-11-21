@@ -25,27 +25,30 @@ import csv
 import os
 from datetime import datetime
 from collections import defaultdict
+from energy_monitor import EnergyMonitor
 
 
 class DynamicFPLFController(app_manager.RyuApp):
     """
     Dynamic FPLF Controller with Traffic-Type Awareness and Real-Time Link Monitoring
 
-    Combined Weight Formula:
+    Flow-Type-Aware Weight Formula:
     1. Base Weight (from utilization):
        - uti == 0:           weight = 500 (initial/idle)
        - 0 < uti < 0.08:     weight = 499 - (0.08 - uti) (below threshold)
        - uti >= 0.08:        weight = 1000 (congested, threshold adjusted for 10Mbps bottleneck)
 
-    2. Priority Adjustment (from ML classification):
-       - adjusted_weight = base_weight * priority_factor
-       - VIDEO (priority=4): factor=0.25 → strongly prefers low-load links (4x better)
-       - SSH (priority=3):   factor=0.5  → moderately prefers low-load links (2x better)
-       - HTTP (priority=2):  factor=0.75 → slight preference (1.33x better)
-       - FTP (priority=1):   factor=1.0  → full weight, neutral
-       - UNKNOWN (priority=0): factor=1.0 → no adjustment
+    2. Congestion Penalty (from ML classification):
+       - adjusted_weight = base_weight + (utilization × penalty_multiplier)
+       - VIDEO (priority=4): penalty=2000 → strongly avoids congested links (takes longer low-util paths)
+       - SSH (priority=3):   penalty=1000 → moderately avoids congestion
+       - HTTP (priority=2):  penalty=500  → slight congestion avoidance
+       - FTP (priority=1):   penalty=100  → tolerates congestion (prefers shorter paths)
+       - UNKNOWN (priority=0): penalty=100 → minimal penalty
 
-    This combines dynamic load balancing with traffic-type priorities
+    This produces DIFFERENT routing paths for different traffic types, combining:
+    - Dynamic load balancing (base weights from real-time utilization)
+    - Flow-type-specific congestion tolerance (penalty varies by traffic priority)
     """
 
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -90,6 +93,11 @@ class DynamicFPLFController(app_manager.RyuApp):
         self.data_dir = os.path.join(os.path.dirname(__file__), '../../data/fplf_monitoring')
         os.makedirs(self.data_dir, exist_ok=True)
 
+        # Energy monitoring
+        self.energy_monitor = EnergyMonitor(data_dir=self.data_dir)
+        self.topology_ready = False  # Wait for topology discovery before energy calc
+        self.expected_total_links = 6  # 3-switch mesh: only inter-switch links (not host links)
+
         # CSV files for monitoring
         self.utilization_csv = os.path.join(self.data_dir, 'link_utilization.csv')
         self.routes_csv = os.path.join(self.data_dir, 'fplf_routes.csv')
@@ -114,6 +122,7 @@ class DynamicFPLFController(app_manager.RyuApp):
         self.logger.info(f"Loaded {len(self.host_map)} host mappings")
         self.logger.info(f"Loaded {len(self.classified_flows)} classified flows")
         self.logger.info(f"Traffic priorities: VIDEO=4, SSH=3, HTTP=2, FTP=1")
+        self.logger.info(f"Energy monitoring: ENABLED (vs all-links-active baseline)")
 
     def _init_csv_files(self):
         """Initialize CSV files with headers"""
@@ -487,10 +496,14 @@ class DynamicFPLFController(app_manager.RyuApp):
         # Update graph weights based on utilization
         self._update_graph_weights()
 
+        # Calculate energy consumption
+        self._calculate_energy_consumption()
+
         # Export to CSV periodically
         if self.stats_update_count % 10 == 0:
             self._export_utilization_to_csv()
             self._export_graph_weights_to_csv()
+            self._export_energy_data()
 
     def _update_graph_weights(self):
         """
@@ -546,6 +559,51 @@ class DynamicFPLFController(app_manager.RyuApp):
                     writer.writerow([timestamp, f"({src},{dst})", weight, f"{uti:.4f}"])
         except Exception as e:
             self.logger.error(f"Error exporting graph weights: {e}")
+
+    def _calculate_energy_consumption(self):
+        """Calculate and log energy consumption based on active links"""
+        # Total links in topology
+        total_links = len(self.topology.edges())
+
+        # DEBUG: Log every call
+        if self.stats_update_count % 50 == 0:
+            self.logger.info(f"[ENERGY DEBUG] total_links={total_links}, topology_ready={self.topology_ready}")
+
+        # Wait until topology is fully discovered
+        # Mesh topology: nx.Graph() is undirected, so 3 switch pairs = 3 edges
+        if not self.topology_ready:
+            if total_links >= 3:  # 3-switch mesh has 3 undirected edges (s1-s2, s1-s3, s2-s3)
+                self.topology_ready = True
+                self.logger.info(f"✓ Topology ready for energy monitoring: {total_links} undirected edges")
+            else:
+                # Skip energy calculation until we have enough links
+                if self.stats_update_count % 50 == 0:
+                    self.logger.info(f"[ENERGY DEBUG] Waiting for topology: {total_links}/3 edges")
+                return
+
+        # Count active DIRECTIONAL links (utilization > 0)
+        # link_utilization tracks bidirectional separately: (s1,s2) and (s2,s1)
+        active_links = sum(1 for uti in self.link_utilization.values() if uti > 0)
+
+        # Total DIRECTIONAL links = number of entries in link_utilization
+        # This is typically 2x the number of undirected edges (bidirectional)
+        total_directional_links = len(self.link_utilization)
+
+        # Log energy data to energy monitor using directional link counts
+        if total_directional_links > 0:
+            self.energy_monitor.log_energy_data(active_links, total_directional_links)
+
+    def _export_energy_data(self):
+        """Export energy consumption data to CSV and print summary"""
+        try:
+            # Export buffered energy data to CSV
+            self.energy_monitor.export_to_csv()
+
+            # Print summary every 10 stats updates (every 10 seconds)
+            if self.stats_update_count % 100 == 0:  # Print every 100 seconds
+                self.energy_monitor.print_summary()
+        except Exception as e:
+            self.logger.error(f"Error exporting energy data: {e}")
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -704,34 +762,42 @@ class DynamicFPLFController(app_manager.RyuApp):
         """
         Compute optimal path using Dijkstra's algorithm with dynamic weights AND traffic priority
 
-        Combined FPLF Formula:
-        - Base weight from utilization: 500 (idle), 499-(0.9-uti) (active), 1000 (congested)
-        - Priority factor: (5 - priority) / 4
-        - Final weight = base_weight * priority_factor
+        Flow-Type-Aware FPLF Formula:
+        - Base weight from utilization: 500 (idle), 499-(0.08-uti) (active), 1000 (congested)
+        - Congestion penalty = utilization × penalty_multiplier (varies by priority)
+        - Final weight = base_weight + congestion_penalty
 
-        This means:
-        - VIDEO (priority=4): factor=0.25 → strongly prefers low-weight links
-        - SSH (priority=3): factor=0.5 → moderately prefers low-weight links
-        - HTTP (priority=2): factor=0.75 → slight preference for low-weight links
-        - FTP (priority=1): factor=1.0 → uses full weights, less picky
+        Penalty Multipliers:
+        - VIDEO (priority=4): 2000 → strongly avoids congested links (takes longer low-util paths)
+        - SSH (priority=3):   1000 → moderately avoids congestion
+        - HTTP (priority=2):   500 → slight congestion avoidance
+        - FTP (priority=1):    100 → tolerates congestion (prefers shorter paths)
+        - UNKNOWN (priority=0): 100 → minimal penalty
+
+        This produces DIFFERENT paths for different traffic types based on congestion tolerance.
         """
         if src_dpid == dst_dpid:
             return [src_dpid]
 
         try:
-            # Apply priority-based weight adjustment
+            # Apply priority-based weight adjustment PER EDGE
             for (src, dst) in self.topology.edges():
                 base_weight = self.topology[src][dst].get('weight', 500)
+                utilization = self.link_utilization.get((src, dst), 0.0)
 
-                # Priority factor: higher priority = lower multiplier = stronger preference for low-weight paths
-                # Special case: priority=0 (UNKNOWN) uses factor=1.0 (no adjustment)
-                if priority == 0:
-                    priority_factor = 1.0  # No adjustment for unknown traffic
-                else:
-                    priority_factor = (5 - priority) / 4.0
+                # Determine congestion penalty multiplier based on traffic priority
+                if priority == 4:  # VIDEO - strongly avoid congestion
+                    penalty_multiplier = 2000
+                elif priority == 3:  # SSH - moderately avoid congestion
+                    penalty_multiplier = 1000
+                elif priority == 2:  # HTTP - slight avoidance
+                    penalty_multiplier = 500
+                else:  # FTP (priority=1) or UNKNOWN (priority=0) - minimal penalty
+                    penalty_multiplier = 100
 
-                # Adjust weight based on priority
-                adjusted_weight = base_weight * priority_factor
+                # Add congestion penalty (varies by link utilization AND traffic type)
+                congestion_penalty = utilization * penalty_multiplier
+                adjusted_weight = base_weight + congestion_penalty
 
                 # Store adjusted weight temporarily for Dijkstra
                 self.topology[src][dst]['adjusted_weight'] = adjusted_weight

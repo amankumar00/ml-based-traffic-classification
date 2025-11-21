@@ -1,5 +1,5 @@
 {
-  "model_type": "neural_network",
+  "model_type": "random_forest",
   "feature_names": [
     "total_packets",
     "forward_packets",
@@ -36,5 +36,7 @@
     "HTTP",
     "SSH",
     "VIDEO"
-  ]
+  ],
+  "train_accuracy": 1.0,
+  "note": "Retrained with dst_port as primary discriminator"
 }

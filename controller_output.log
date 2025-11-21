@@ -1,0 +1,185 @@
+loading app src/controller/dynamic_fplf_controller.py
+loading app ryu.topology.switches
+loading app ryu.controller.ofp_handler
+instantiating app src/controller/dynamic_fplf_controller.py of DynamicFPLFController
+Loaded 6 classified flows from /home/hello/Desktop/ML_SDN/src/controller/../../data/processed/host_to_host_flows.csv
+Loaded host map from /home/hello/Desktop/ML_SDN/src/controller/../../config/host_map.txt
+Pre-populated MAC tables with 9 entries from host_map
+MAC-to-DPID: {'00:00:00:00:00:01': 1, '00:00:00:00:00:02': 1, '00:00:00:00:00:03': 1, '00:00:00:00:00:04': 2, '00:00:00:00:00:05': 2, '00:00:00:00:00:06': 2, '00:00:00:00:00:07': 3, '00:00:00:00:00:08': 3, '00:00:00:00:00:09': 3}
+============================================================
+Dynamic FPLF Controller with Traffic-Type Awareness
+============================================================
+Monitoring data: /home/hello/Desktop/ML_SDN/src/controller/../../data/fplf_monitoring
+Loaded 9 host mappings
+Loaded 6 classified flows
+Traffic priorities: VIDEO=4, SSH=3, HTTP=2, FTP=1
+Energy monitoring: ENABLED (vs all-links-active baseline)
+instantiating app ryu.topology.switches of Switches
+instantiating app ryu.controller.ofp_handler of OFPHandler
+Switch s1 connected
+Switch entered topology: 1
+Topology: 1 switches, 0 links
+Switch s2 connected
+Switch entered topology: 2
+LLDP discovery failed - building manual topology for 2 switches
+Manual topology: 2 switches, 1 links
+Inter-switch ports: [(1, 4), (2, 4)]
+Pre-populated MAC tables with 9 entries from host_map
+MAC-to-DPID: {'00:00:00:00:00:01': 1, '00:00:00:00:00:02': 1, '00:00:00:00:00:03': 1, '00:00:00:00:00:04': 2, '00:00:00:00:00:05': 2, '00:00:00:00:00:06': 2, '00:00:00:00:00:07': 3, '00:00:00:00:00:08': 3, '00:00:00:00:00:09': 3}
+Topology: 2 switches, 1 links
+Switch s3 connected
+Switch entered topology: 3
+LLDP discovery failed - building manual topology for 3 switches
+Manual topology: 3 switches, 3 links
+Inter-switch ports: [(1, 4), (1, 5), (2, 4), (2, 5), (3, 4), (3, 5)]
+Pre-populated MAC tables with 9 entries from host_map
+MAC-to-DPID: {'00:00:00:00:00:01': 1, '00:00:00:00:00:02': 1, '00:00:00:00:00:03': 1, '00:00:00:00:00:04': 2, '00:00:00:00:00:05': 2, '00:00:00:00:00:06': 2, '00:00:00:00:00:07': 3, '00:00:00:00:00:08': 3, '00:00:00:00:00:09': 3}
+Topology: 3 switches, 3 links
+✓ Topology ready for energy monitoring: 3 undirected edges
+======================================================================
+FPLF Route Comparison #50
+  Flow: 10.0.0.4 -> 10.0.0.2
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s2 -> s1
+  FPLF Path (optimized):   s2 -> s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: [498.9]
+  Adjusted Weights: [526.5]
+======================================================================
+======================================================================
+FPLF Route Comparison #100
+  Flow: 10.0.0.3 -> 10.0.0.1
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s1
+  FPLF Path (optimized):   s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #150
+  Flow: 10.0.0.3 -> 10.0.0.1
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s1
+  FPLF Path (optimized):   s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #200
+  Flow: 10.0.0.3 -> 10.0.0.1
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s1
+  FPLF Path (optimized):   s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #250
+  Flow: 10.0.0.3 -> 10.0.0.1
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s1
+  FPLF Path (optimized):   s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #300
+  Flow: 10.0.0.3 -> 10.0.0.1
+  Traffic: VIDEO (Priority=4)
+  Baseline Path (no FPLF): s1
+  FPLF Path (optimized):   s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+[ENERGY DEBUG] total_links=3, topology_ready=True
+Link (1, 2): 10.9% utilized (10.88 Mbps)
+======================================================================
+FPLF Route Comparison #350
+  Flow: 10.0.0.5 -> 10.0.0.1
+  Traffic: SSH (Priority=3)
+  Baseline Path (no FPLF): s2 -> s1
+  FPLF Path (optimized):   s2 -> s3 -> s1
+  ⚡ ROUTE CHANGED! FPLF chose different path
+  Base Weights: [498.9, 498.9]
+  Adjusted Weights: [511.4, 511.5]
+======================================================================
+Link (2, 1): 10.8% utilized (10.78 Mbps)
+Link (1, 2): 10.9% utilized (10.91 Mbps)
+======================================================================
+FPLF Route Comparison #400
+  Flow: 10.0.0.6 -> 10.0.0.2
+  Traffic: SSH (Priority=3)
+  Baseline Path (no FPLF): s2 -> s1
+  FPLF Path (optimized):   s2 -> s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: [1000.0]
+  Adjusted Weights: [1109.1]
+======================================================================
+======================================================================
+FPLF Route Comparison #450
+  Flow: 10.0.0.5 -> 10.0.0.3
+  Traffic: FTP (Priority=1)
+  Baseline Path (no FPLF): s2 -> s1
+  FPLF Path (optimized):   s2 -> s1
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: [1000.0]
+  Adjusted Weights: [1010.9]
+======================================================================
+======================================================================
+FPLF Route Comparison #500
+  Flow: 10.0.0.6 -> 10.0.0.4
+  Traffic: FTP (Priority=1)
+  Baseline Path (no FPLF): s2
+  FPLF Path (optimized):   s2
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #550
+  Flow: 10.0.0.6 -> 10.0.0.4
+  Traffic: FTP (Priority=1)
+  Baseline Path (no FPLF): s2
+  FPLF Path (optimized):   s2
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+[ENERGY DEBUG] total_links=3, topology_ready=True
+Link (2, 1): 21.8% utilized (21.80 Mbps)
+Link (1, 2): 21.7% utilized (21.67 Mbps)
+Link (2, 1): 21.7% utilized (21.67 Mbps)
+Link (1, 2): 21.7% utilized (21.69 Mbps)
+[ENERGY DEBUG] total_links=3, topology_ready=True
+Link (2, 1): 21.8% utilized (21.80 Mbps)
+Link (1, 2): 22.0% utilized (22.00 Mbps)
+======================================================================
+FPLF Route Comparison #600
+  Flow: 10.0.0.4 -> 10.0.0.6
+  Traffic: UNKNOWN (Priority=0)
+  Baseline Path (no FPLF): s2
+  FPLF Path (optimized):   s2
+  ✓ Same path (FPLF confirms optimal)
+  Base Weights: []
+  Adjusted Weights: []
+======================================================================
+======================================================================
+FPLF Route Comparison #650
+  Flow: 10.0.0.2 -> 10.0.0.6
+  Traffic: UNKNOWN (Priority=0)
+  Baseline Path (no FPLF): s1 -> s2
+  FPLF Path (optimized):   s1 -> s3 -> s2
+  ⚡ ROUTE CHANGED! FPLF chose different path
+  Base Weights: [499.0, 499.0]
+  Adjusted Weights: [503.2, 503.2]
+======================================================================
+[ENERGY DEBUG] total_links=3, topology_ready=True
+[ENERGY DEBUG] total_links=3, topology_ready=True
+[ENERGY DEBUG] total_links=3, topology_ready=True
+[ENERGY DEBUG] total_links=3, topology_ready=True
+Unregister datapath: s3

@@ -1,0 +1,22 @@
+# Host-to-Switch Mapping for 7-Switch Core Network Topology
+# Format: MAC DPID PORT
+#
+# Edge switches: s1, s2, s3, s4 (hosts attached)
+# Core switches: s5, s6, s7 (no hosts, pure forwarding)
+
+# s1 hosts (2 hosts)
+00:00:00:00:00:01 1 1
+00:00:00:00:00:02 1 2
+
+# s2 hosts (2 hosts)
+00:00:00:00:00:03 2 1
+00:00:00:00:00:04 2 2
+
+# s3 hosts (2 hosts)
+00:00:00:00:00:05 3 1
+00:00:00:00:00:06 3 2
+
+# s4 hosts (3 hosts)
+00:00:00:00:00:07 4 1
+00:00:00:00:00:08 4 2
+00:00:00:00:00:09 4 3

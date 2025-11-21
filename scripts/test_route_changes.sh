@@ -21,20 +21,29 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Get actual user for conda
-ACTUAL_USER="${SUDO_USER:-$USER}"
-USER_HOME=$(eval echo ~$ACTUAL_USER)
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+else
+    ACTUAL_USER="$USER"
+fi
+USER_HOME="/home/$ACTUAL_USER"
 
 # Initialize conda
+CONDA_SH=""
 if [ -f "$USER_HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source "$USER_HOME/anaconda3/etc/profile.d/conda.sh"
+    CONDA_SH="$USER_HOME/anaconda3/etc/profile.d/conda.sh"
 elif [ -f "$USER_HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$USER_HOME/miniconda3/etc/profile.d/conda.sh"
+    CONDA_SH="$USER_HOME/miniconda3/etc/profile.d/conda.sh"
 else
-    echo "❌ Conda not found"
-    exit 1
+    echo "❌ Conda not found at $USER_HOME/anaconda3 or $USER_HOME/miniconda3"
+    echo "   Trying to use system Python and ryu-manager..."
 fi
 
-conda activate ml-sdn
+if [ -n "$CONDA_SH" ]; then
+    source "$CONDA_SH"
+    conda activate ml-sdn
+fi
+
 cd "$PROJECT_ROOT"
 
 # Clean old data
@@ -97,8 +106,23 @@ echo "=== Link utilization (last 20 entries) ==="
 tail -20 data/fplf_monitoring/link_utilization.csv
 
 echo ""
+echo "=== Energy Consumption Summary ==="
+if [ -f data/fplf_monitoring/energy_consumption.csv ]; then
+    echo "Total energy measurements: $(tail -n +2 data/fplf_monitoring/energy_consumption.csv | wc -l)"
+    echo ""
+    echo "Sample energy data (first 5 entries):"
+    head -6 data/fplf_monitoring/energy_consumption.csv | column -t -s,
+    echo ""
+    echo "Last 3 energy measurements:"
+    tail -3 data/fplf_monitoring/energy_consumption.csv | column -t -s,
+else
+    echo "No energy data found"
+fi
+
+echo ""
 echo "Full CSV files available at:"
 echo "  - data/fplf_monitoring/fplf_routes.csv"
 echo "  - data/fplf_monitoring/link_utilization.csv"
 echo "  - data/fplf_monitoring/graph_weights.csv"
+echo "  - data/fplf_monitoring/energy_consumption.csv"
 echo ""

@@ -1,0 +1,43 @@
+{
+  "model_type": "random_forest",
+  "feature_names": [
+    "total_packets",
+    "forward_packets",
+    "backward_packets",
+    "total_bytes",
+    "forward_bytes",
+    "backward_bytes",
+    "flow_duration",
+    "packets_per_second",
+    "bytes_per_second",
+    "min_packet_size",
+    "max_packet_size",
+    "mean_packet_size",
+    "std_packet_size",
+    "mean_forward_packet_size",
+    "mean_backward_packet_size",
+    "mean_inter_arrival_time",
+    "std_inter_arrival_time",
+    "min_inter_arrival_time",
+    "max_inter_arrival_time",
+    "syn_count",
+    "ack_count",
+    "fin_count",
+    "rst_count",
+    "psh_count",
+    "mean_tcp_window",
+    "mean_ttl",
+    "mean_tos"
+  ],
+  "class_names": [
+    "FTP",
+    "HTTP",
+    "SSH",
+    "VIDEO"
+  ],
+  "train_accuracy": 1.0,
+  "test_accuracy": 1.0,
+  "training_samples": 8000,
+  "approach": "synthetic_diverse_data",
+  "note": "Trained on diverse synthetic data WITHOUT port features!"
+}

@@ -181,18 +181,14 @@ def main():
         src_host = ip_to_host(flow_info['src_ip'])
         dst_host = ip_to_host(flow_info['dst_ip'])
 
-        # Use port-based classification as override if available
+        # Use ML classification (model uses dst_port as 2nd most important feature)
         ml_prediction = predicted_classes[i]
-        port_based_class = classify_by_port(flow_info['src_port'], flow_info['dst_port'])
 
-        if port_based_class is not None:
-            # Port-based classification overrides ML prediction
-            final_class = port_based_class
-            classification_method = 'port'
-        else:
-            # Use ML prediction if port is not in known list
-            final_class = ml_prediction
-            classification_method = 'ml'
+        # Use ML prediction directly - the Random Forest model was trained
+        # with dst_port as a feature (13.74% importance, 2nd most important)
+        # so it naturally learns port-based patterns through the neural network
+        final_class = ml_prediction
+        classification_method = 'ml'
 
         # Build result row
         result = {
@@ -217,16 +213,16 @@ def main():
     # Create results dataframe
     results_df = pd.DataFrame(results)
 
-    # Count classification methods
-    port_classified = sum(1 for r in results if classify_by_port(r['src_port'], r['dst_port']) is not None)
-    ml_classified = len(results) - port_classified
+    # Count classification methods (all flows use ML now)
+    ml_classified = len(results)
+    port_classified = 0  # No hardcoded port rules, ML learns from port features
 
     # Save to CSV
     results_df.to_csv(output_file, index=False)
     print(f"\n✓ Results saved to {output_file}")
     print(f"  Total flows: {len(results_df)}")
-    print(f"  Port-based classification: {port_classified} flows")
-    print(f"  ML-based classification: {ml_classified} flows")
+    print(f"  ML-based classification: {ml_classified} flows ({ml_classified/len(results)*100:.1f}%)")
+    print(f"  (Random Forest model uses dst_port as 2nd most important feature)")
 
     # Show summary
     print("\nTraffic Summary:")
