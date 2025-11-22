@@ -3,18 +3,6 @@
 Test 7-Switch Core Network Topology
 Purpose: Validate ML classifier + FPLF scalability with complex topology
 
-Topology:
-    Edge Layer: s1, s2, s3, s4 (hosts attached)
-    Core Layer: s5, s6, s7 (pure forwarding)
-
-    h1,h2 ─ s1 ─────┐
-                    │
-    h3,h4 ─ s2 ───┐ ├─── s5 ───┐
-                  │ │           │
-    h5,h6 ─ s3 ───┼─┼───────────┼─── s6
-                  │ │           │     │
-    h7,h8,h9─ s4 ─┴─┘           └─────┴─── s7
-
 Links: 10 inter-switch (20 directional)
 Hosts: 9 total, distributed across edge switches
 """
@@ -26,6 +14,12 @@ from mininet.log import setLogLevel, info
 from mininet.link import TCLink
 import time
 import argparse
+import sys
+import os
+
+# Add current directory to path for importing realistic traffic generator
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from realistic_traffic_generator import generate_realistic_traffic
 
 
 def create_7switch_topology(controller_ip='127.0.0.1', controller_port=6653):
@@ -141,29 +135,29 @@ def create_7switch_topology(controller_ip='127.0.0.1', controller_port=6653):
     info('Inter-switch links: 10 undirected (20 directional)\n')
     info('  Edge-to-core: 7 links\n')
     info('  Core-to-core: 3 links (full mesh)\n')
-    info('\n')
-    info('Path diversity examples:\n')
-    info('  h1 (s1) → h7 (s4): 6 possible paths!\n')
-    info('    1. s1 → s5 → s7 → s4\n')
-    info('    2. s1 → s6 → s7 → s4\n')
-    info('    3. s1 → s5 → s6 → s7 → s4\n')
-    info('    ... (and more)\n')
-    info('='*80 + '\n')
+    # info('\n')
+    # info('Path diversity examples:\n')
+    # info('  h1 (s1) → h7 (s4): 6 possible paths!\n')
+    # info('    1. s1 → s5 → s7 → s4\n')
+    # info('    2. s1 → s6 → s7 → s4\n')
+    # info('    3. s1 → s5 → s6 → s7 → s4\n')
+    # info('    ... (and more)\n')
+    # info('='*80 + '\n')
     info('\n')
 
     return net
 
 
 def generate_test_traffic(net, duration=60):
-    """
-    Generate test traffic to validate ML classifier + FPLF
+    # """
+    # Generate test traffic to validate ML classifier + FPLF
 
-    Traffic patterns:
-    - VIDEO: h1 -> h7 (cross-rack, high priority) - CONTINUOUS iperf UDP stream
-    - SSH: h3 -> h5 (cross-rack, medium-high priority) - BURSTY interactive
-    - HTTP: h2 -> h8 (cross-rack, medium priority) - REQUEST-RESPONSE pattern
-    - FTP: h4 -> h9 (cross-rack, low priority) - BULK TCP transfer
-    """
+    # Traffic patterns:
+    # - VIDEO: h1 -> h7 (cross-rack, high priority) - CONTINUOUS iperf UDP stream
+    # - SSH: h3 -> h5 (cross-rack, medium-high priority) - BURSTY interactive
+    # - HTTP: h2 -> h8 (cross-rack, medium priority) - REQUEST-RESPONSE pattern
+    # - FTP: h4 -> h9 (cross-rack, low priority) - BULK TCP transfer
+    # """
     hosts = net.hosts
 
     info('*** Generating test traffic for 7-switch topology\n')
@@ -202,8 +196,8 @@ def generate_test_traffic(net, duration=60):
     info('\\n*** Starting TCP iperf traffic generators\\n')
 
     # VIDEO traffic: h1 -> h7:5004 (TCP iperf, continuous stream)
-    info('1. Starting VIDEO traffic: h1 -> h7:5004 (TCP iperf, 2 streams)\\n')
-    h1.cmd(f'iperf -c {h7.IP()} -p 5004 -P 2 -t {duration} > /dev/null 2>&1 &')
+    info('1. Starting VIDEO traffic: h1 -> h7:5004 (TCP iperf, 1 stream)\\n')
+    h1.cmd(f'iperf -c {h7.IP()} -p 5004 -t {duration} > /dev/null 2>&1 &')
 
     # SSH traffic: h3 -> h5:22 (TCP iperf, continuous stream)
     info('2. Starting SSH traffic: h3 -> h5:22 (TCP iperf, 1 stream)\\n')
@@ -219,27 +213,115 @@ def generate_test_traffic(net, duration=60):
 
     info('='*80 + '\n')
     info('*** Traffic flows created (TCP iperf - PORT-BASED ML):\n')
-    info('  VIDEO (priority 4): h1 (s1) -> h7 (s4):5004 - TCP iperf (2 streams, continuous)\n')
-    info('  SSH   (priority 3): h3 (s2) -> h5 (s3):22 - TCP iperf (1 stream, continuous)\n')
-    info('  HTTP  (priority 2): h2 (s1) -> h8 (s4):80 - TCP iperf (1 stream, continuous)\n')
-    info('  FTP   (priority 1): h4 (s2) -> h9 (s4):21 - TCP iperf (1 stream, continuous)\n')
+    # info('  VIDEO (priority 4): h1 (s1) -> h7 (s4):5004 - TCP iperf (1 stream, continuous)\n')
+    # info('  SSH   (priority 3): h3 (s2) -> h5 (s3):22 - TCP iperf (1 stream, continuous)\n')
+    # info('  HTTP  (priority 2): h2 (s1) -> h8 (s4):80 - TCP iperf (1 stream, continuous)\n')
+    # info('  FTP   (priority 1): h4 (s2) -> h9 (s4):21 - TCP iperf (1 stream, continuous)\n')
     info('='*80 + '\n')
     info(f'\n*** Running for {duration} seconds...\n')
-    info('*** Expected results:\n')
-    info(f'  TOTAL FLOWS: Exactly 8 (4 traffic types × 2 directions)\n')
-    info(f'  VIDEO: Continuous TCP stream (2 parallel connections)\n')
-    info(f'  SSH: Continuous TCP stream\n')
-    info(f'  HTTP: Continuous TCP stream\n')
-    info(f'  FTP: Continuous TCP stream\n')
-    info('*** PORT-BASED ML: Classifier uses src_port and dst_port features\n')
-    info('*** FPLF should choose DIFFERENT paths for each traffic type!\n')
-    info('*** VIDEO: Longest path (avoids congestion)\n')
-    info('*** FTP: Shortest path (tolerates congestion)\n')
+    # info('*** Expected results:\n')
+    # info(f'  TOTAL FLOWS: Exactly 8 (4 traffic types × 2 directions)\n')
+    # info(f'  VIDEO: Continuous TCP stream (1 connection)\n')
+    # info(f'  SSH: Continuous TCP stream\n')
+    # info(f'  HTTP: Continuous TCP stream\n')
+    # info(f'  FTP: Continuous TCP stream\n')
+    # info('*** PORT-BASED ML: Classifier uses src_port and dst_port features\n')
+    # info('*** FPLF should choose DIFFERENT paths for each traffic type!\n')
+    # info('*** VIDEO: Longest path (avoids congestion)\n')
+    # info('*** FTP: Shortest path (tolerates congestion)\n')
     info('='*80 + '\n')
 
     time.sleep(duration)
 
     info('*** Traffic generation complete\n')
+
+
+def generate_phased_traffic(net, duration=60):
+    # """
+    # # Generate DYNAMIC traffic with 3 phases to demonstrate FPLF adaptation
+
+    # # This creates realistic varying load over time, showing how FPLF
+    # # dynamically adjusts active links and power consumption.
+
+    # # Phase 1 (0-20s):   SSH only (0.5 Mbps)  → Low load  (~8 links,  ~45% savings)
+    # # Phase 2 (20-40s):  SSH + HTTP (3.5 Mbps) → Med load (~16 links, ~25% savings)
+    # # Phase 3 (40-60s):  All traffic (10.5 Mbps) → High load (~24 links, ~12% savings)
+    # # """
+    hosts = net.hosts
+
+    info('\n' + '='*80 + '\n')
+    info('*** PHASED TRAFFIC GENERATION (Dynamic Load Simulation)\n')
+    info('='*80 + '\n')
+    # info('This demonstrates FPLF adaptive behavior with varying network load:\n')
+    # info('  Phase 1 (0-20s):  Light traffic  - SSH only\n')
+    # info('  Phase 2 (20-40s): Medium traffic - SSH + HTTP\n')
+    # info('  Phase 3 (40-60s): Heavy traffic  - All services (SSH+HTTP+VIDEO+FTP)\n')
+    info('='*80 + '\n\n')
+
+    # Get hosts
+    h1 = net.get('h1')
+    h2 = net.get('h2')
+    h3 = net.get('h3')
+    h4 = net.get('h4')
+    h5 = net.get('h5')
+    h7 = net.get('h7')
+    h8 = net.get('h8')
+    h9 = net.get('h9')
+
+    # Start servers (always running)
+    info('*** Starting iperf servers on all hosts\n')
+    h7.cmd('iperf -s -p 5004 > /dev/null 2>&1 &')
+    h5.cmd('iperf -s -p 22 > /dev/null 2>&1 &')
+    h8.cmd('iperf -s -p 80 > /dev/null 2>&1 &')
+    h9.cmd('iperf -s -p 21 > /dev/null 2>&1 &')
+    time.sleep(3)
+
+    # Phase 1: Low traffic (0-20s) - SSH only, LOW bandwidth
+    info('\n' + '='*80 + '\n')
+    info('*** Phase 1 (0-20s): LIGHT TRAFFIC - SSH only\n')
+    info('='*80 + '\n')
+    info('Starting SSH traffic: h3 -> h5:22 (500 Kbps, light load)\n')
+    info('Expected: ~6-10 active links, ~35-45%% energy savings\n\n')
+
+    h3.cmd(f'iperf -c {h5.IP()} -p 22 -b 500K -t 60 > /dev/null 2>&1 &')
+
+    info('Waiting 20 seconds (Phase 1)...\n')
+    time.sleep(20)
+
+    # Phase 2: Medium traffic (20-40s) - SSH + HTTP, MEDIUM bandwidth
+    info('\n' + '='*80 + '\n')
+    info('*** Phase 2 (20-40s): MEDIUM TRAFFIC - SSH + HTTP\n')
+    info('='*80 + '\n')
+    info('Adding HTTP traffic: h2 -> h8:80 (3 Mbps, moderate load)\n')
+    info('Expected: ~14-18 active links, ~20-30%% energy savings\n\n')
+
+    h2.cmd(f'iperf -c {h8.IP()} -p 80 -b 3M -t 40 > /dev/null 2>&1 &')
+
+    info('Waiting 20 seconds (Phase 2)...\n')
+    time.sleep(20)
+
+    # Phase 3: High traffic (40-60s) - All services, HIGH bandwidth
+    info('\n' + '='*80 + '\n')
+    # info('*** Phase 3 (40-60s): HEAVY TRAFFIC - All services\n')
+    info('='*80 + '\n')
+    # info('Adding VIDEO traffic: h1 -> h7:5004 (5 Mbps, HD streaming)\n')
+    # info('Adding FTP traffic: h4 -> h9:21 (2 Mbps, bulk transfer)\n')
+    # info('Expected: ~22-26 active links, ~10-15%% energy savings\n\n')
+
+    h1.cmd(f'iperf -c {h7.IP()} -p 5004 -b 5M -t 20 > /dev/null 2>&1 &')
+    h4.cmd(f'iperf -c {h9.IP()} -p 21 -b 2M -t 20 > /dev/null 2>&1 &')
+
+    # info('Waiting 20 seconds (Phase 3)...\n')
+    time.sleep(20)
+
+    info('\n' + '='*80 + '\n')
+    # info('*** Phased traffic generation complete!\n')
+    info('='*80 + '\n')
+    # info('Check graphs for dynamic behavior:\n')
+    # info('  - Active links should show 3-step increase\n')
+    # info('  - Power consumption should rise over time\n')
+    # info('  - Energy savings should decrease as load increases\n')
+    info('='*80 + '\n\n')
 
 
 def main():
@@ -255,6 +337,12 @@ def main():
     parser.add_argument('--traffic', '-t',
                        action='store_true',
                        help='Generate test traffic automatically')
+    parser.add_argument('--phased', '--phased-traffic',
+                       action='store_true',
+                       help='Generate phased traffic (dynamic load over time)')
+    parser.add_argument('--realistic', '--realistic-traffic',
+                       action='store_true',
+                       help='Generate REALISTIC variable traffic (bursty, fluctuating) - RECOMMENDED for dynamic graphs!')
     parser.add_argument('--duration', '-d',
                        type=int,
                        default=60,
@@ -272,8 +360,15 @@ def main():
 
     try:
         if args.traffic:
-            # Generate traffic
-            generate_test_traffic(net, duration=args.duration)
+            if args.realistic:
+                # Generate REALISTIC variable traffic (RECOMMENDED for dynamic graphs!)
+                generate_realistic_traffic(net, duration=args.duration)
+            elif args.phased:
+                # Generate phased traffic (dynamic load)
+                generate_phased_traffic(net, duration=args.duration)
+            else:
+                # Generate continuous traffic (steady state)
+                generate_test_traffic(net, duration=args.duration)
         else:
             # Interactive mode
             info('*** Running CLI (type "help" for commands)\n')

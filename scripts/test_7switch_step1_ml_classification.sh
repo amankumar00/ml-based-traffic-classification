@@ -29,7 +29,7 @@ echo "==========================================================================
 echo ""
 
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ Please run with sudo"
+    echo " Please run with sudo"
     exit 1
 fi
 
@@ -48,7 +48,7 @@ if [ -f "$USER_HOME/anaconda3/etc/profile.d/conda.sh" ]; then
 elif [ -f "$USER_HOME/miniconda3/etc/profile.d/conda.sh" ]; then
     CONDA_SH="$USER_HOME/miniconda3/etc/profile.d/conda.sh"
 else
-    echo "⚠️  Conda not found, trying system Python..."
+    echo "  Conda not found, trying system Python..."
 fi
 
 if [ -n "$CONDA_SH" ]; then
@@ -62,7 +62,7 @@ cd "$PROJECT_ROOT"
 echo "1. Cleaning old packet capture data..."
 rm -f data/raw/captured_packets_*.json
 rm -f data/raw/flow_stats_*.json
-echo "   ✓ Old packet data removed"
+# echo "   ✓ Old packet data removed"
 echo ""
 
 # Start SDN controller for traffic monitoring
@@ -77,7 +77,7 @@ echo ""
 
 # Start 7-switch topology with traffic
 echo "3. Starting 7-switch topology with traffic generation..."
-echo "   Running for 60 seconds to collect packet data..."
+# echo "   Running for 60 seconds to collect packet data..."
 echo ""
 
 /usr/bin/python3 topology/test_7switch_core_topo.py \
@@ -115,7 +115,7 @@ if [ "$PACKET_FILES" -gt 0 ]; then
         TOTAL_PACKETS=$((TOTAL_PACKETS + COUNT))
     done
 
-    echo "✅ Captured packets: $TOTAL_PACKETS packets in $PACKET_FILES files"
+    echo " Captured packets: $TOTAL_PACKETS packets in $PACKET_FILES files"
     echo ""
 
     # Show sample packet
@@ -139,7 +139,7 @@ except Exception as e:
 " 2>/dev/null
     echo ""
 else
-    echo "❌ No packet files found in data/raw/"
+    echo " No packet files found in data/raw/"
     echo "   Check controller log: data/raw/sdn_controller_7switch.log"
     echo ""
     exit 1
@@ -156,10 +156,10 @@ echo "6a. Extracting features from captured packets..."
 python3 src/traffic_monitor/feature_extractor.py data/raw/captured_packets_*.json data/processed/features.csv
 
 if [ ! -f data/processed/features.csv ]; then
-    echo "❌ ERROR: Feature extraction failed!"
+    echo " ERROR: Feature extraction failed!"
     exit 1
 fi
-echo "    ✓ Features extracted to data/processed/features.csv"
+# echo "    ✓ Features extracted to data/processed/features.csv"
 echo ""
 
 # Step 6b: Classify flows
@@ -167,10 +167,10 @@ echo "6b. Classifying flows with ML model..."
 python3 src/ml_models/classify_and_export.py data/models/ data/processed/features.csv data/processed/flow_classification.csv
 
 if [ ! -f data/processed/flow_classification.csv ]; then
-    echo "❌ ERROR: Classification failed!"
+    echo " ERROR: Classification failed!"
     exit 1
 fi
-echo "    ✓ Flows classified to data/processed/flow_classification.csv"
+echo "     Flows classified to data/processed/flow_classification.csv"
 echo ""
 
 # Step 6c: Generate host-to-host CSV with bidirectional flows
@@ -238,7 +238,7 @@ echo ""
 # Check if classification was successful
 if [ -f "data/processed/host_to_host_flows.csv" ]; then
     FLOW_COUNT=$(tail -n +2 data/processed/host_to_host_flows.csv 2>/dev/null | wc -l)
-    echo "✅ ML Classification complete: $FLOW_COUNT flows classified"
+    echo "ML Classification complete: $FLOW_COUNT flows classified"
     echo ""
     echo "Generated file: data/processed/host_to_host_flows.csv"
     echo ""
@@ -248,7 +248,7 @@ if [ -f "data/processed/host_to_host_flows.csv" ]; then
     echo "=========================================================================="
     echo ""
 else
-    echo "❌ Classification failed - host_to_host_flows.csv not created"
+    echo " Classification failed - host_to_host_flows.csv not created"
     echo ""
     exit 1
 fi
@@ -297,18 +297,18 @@ ENDPYTHON
 
 echo ""
 echo "=========================================================================="
-echo "  STEP 1 COMPLETE ✅"
+echo "  STEP 1 COMPLETE "
 echo "=========================================================================="
 echo ""
-echo "Summary:"
-echo "  ✓ Captured $TOTAL_PACKETS packets from 7-switch topology"
-echo "  ✓ Extracted features and classified flows"
-echo "  ✓ Generated $FLOW_COUNT host-to-host flow classifications"
-echo "  ✓ Output: data/processed/host_to_host_flows.csv"
+# echo "Summary:"
+# echo "   Captured $TOTAL_PACKETS packets from 7-switch topology"
+# echo "   Extracted features and classified flows"
+# echo "   Generated $FLOW_COUNT host-to-host flow classifications"
+# echo "   Output: data/processed/host_to_host_flows.csv"
 echo ""
-echo "Next step:"
-echo "  Run Step 2 to test FPLF routing with these classified flows:"
-echo "  sudo bash scripts/test_7switch_step2_fplf_routing.sh"
+# echo "Next step:"
+# echo "  Run Step 2 to test FPLF routing with these classified flows:"
+# echo "  sudo bash scripts/test_7switch_step2_fplf_routing.sh"
 echo ""
 echo "Output files:"
 echo "  - data/raw/captured_packets_*.json (packet capture)"

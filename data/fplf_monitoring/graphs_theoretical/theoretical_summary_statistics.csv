@@ -1,0 +1,12 @@
+Metric,Value
+Duration (seconds),200
+Total Links in Topology,20
+Average Active Links,9.15
+Min Active Links,0.00
+Max Active Links,16.00
+Active Link Std Dev,5.40
+Average FPLF Power (W),67.44
+Average Baseline Power (W),100.00
+Average Power Saved (W),32.56
+Average Energy Savings (%),32.56
+Maximum Energy Savings (%),60.00

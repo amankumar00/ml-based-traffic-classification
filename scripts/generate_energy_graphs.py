@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/hello/miniconda3/envs/ml-sdn/bin/python3
 """
 Generate Energy Consumption Graphs (Paper-Style)
 
@@ -20,7 +20,11 @@ import os
 import sys
 
 # Style configuration (academic paper style)
-plt.style.use('seaborn-v0_8-paper')
+try:
+    plt.style.use('seaborn-v0_8-paper')
+except:
+    # Fallback to classic style if seaborn not available
+    plt.style.use('seaborn-v0_8' if 'seaborn-v0_8' in plt.style.available else 'default')
 plt.rcParams['figure.figsize'] = (10, 6)
 plt.rcParams['font.size'] = 12
 plt.rcParams['lines.linewidth'] = 2

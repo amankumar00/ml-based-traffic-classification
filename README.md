@@ -386,8 +386,13 @@ See [PACKET_DROPS_ANALYSIS.md](PACKET_DROPS_ANALYSIS.md) for detailed explanatio
 
 3. **Generate graphs:**
    ```bash
-   pip3 install pandas matplotlib seaborn
+   # Using ml-sdn conda environment (recommended)
+   source ~/miniconda3/etc/profile.d/conda.sh
+   conda activate ml-sdn
    python3 scripts/generate_energy_graphs.py
+
+   # Or run directly with ml-sdn Python
+   /home/hello/miniconda3/envs/ml-sdn/bin/python3 scripts/generate_energy_graphs.py
    ```
 
 4. **Analyze:**
